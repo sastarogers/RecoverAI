@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: recoverai-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-recoverai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recoverai}
+      POSTGRES_DB: ${POSTGRES_DB:-recoverai}
+    ports:
+      - "5433:5432"
+    volumes:
+      - recoverai_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-recoverai} -d ${POSTGRES_DB:-recoverai}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  recoverai_pgdata:
