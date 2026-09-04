@@ -87,23 +87,29 @@ async def _demo_customer(session: AsyncSession, name: str | None, segment: str) 
     return customer
 
 
-async def _favourable_truth(session: AsyncSession, opportunity: RecoveryOpportunity) -> None:
-    """High (not certain) success probabilities so the demo path is reliable."""
-    from app.domain.enums import SCENARIO_ACTIONS, RecoveryAction, Scenario
+async def _realistic_truth(session: AsyncSession, opportunity: RecoveryOpportunity) -> None:
+    """Authentic, mathematically generated ground truth for the demo."""
+    from app.domain.enums import FailureCategory, Scenario
+    from app.simulation.ground_truth import compute_ground_truth
 
-    probs = {
-        str(a): 0.95
-        for a in SCENARIO_ACTIONS[Scenario(opportunity.scenario)]
-        if a is not RecoveryAction.STOP
-    }
+    truth = compute_ground_truth(
+        seed=DEMO_SEED,
+        opportunity_ref=opportunity.opportunity_ref,
+        scenario=Scenario(opportunity.scenario),
+        failure_category=FailureCategory(opportunity.failure_category or FailureCategory.UNKNOWN.value),
+        amount_minor=opportunity.amount_at_risk_minor,
+        customer_reliability=0.8,
+        price_sensitivity=0.5,
+        unrecoverable_rate=0.1,
+    )
     session.add(
         SimulationGroundTruth(
             opportunity_id=opportunity.id,
-            action_success_probs=probs,
-            latent_factors={"demo": True},
-            optimal_action=max(probs, key=lambda k: probs[k]),
-            optimal_probability=0.95,
-            is_recoverable=True,
+            action_success_probs=truth.action_success_probs,
+            latent_factors=truth.latent_factors,
+            optimal_action=truth.optimal_action,
+            optimal_probability=truth.optimal_probability,
+            is_recoverable=truth.is_recoverable,
         )
     )
     await session.flush()
@@ -183,7 +189,7 @@ async def demo_failed_payment(
         occurred_at=utcnow(),
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _favourable_truth(session, opportunity)
+    await _realistic_truth(session, opportunity)
     return ok(await _drive(session, opportunity))
 
 
@@ -224,7 +230,7 @@ async def demo_checkout_abandonment(
         abandonment_reason="PAYMENT_FRICTION",
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _favourable_truth(session, opportunity)
+    await _realistic_truth(session, opportunity)
     return ok(await _drive(session, opportunity))
 
 
@@ -281,7 +287,7 @@ async def demo_subscription_failure(
         occurred_at=utcnow(),
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _favourable_truth(session, opportunity)
+    await _realistic_truth(session, opportunity)
     return ok(await _drive(session, opportunity))
 
 
