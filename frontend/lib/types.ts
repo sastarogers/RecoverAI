@@ -246,6 +246,28 @@ export type SimulationRun = {
   created_at: string;
 };
 
+export type SimulationReport = {
+  run: SimulationRun;
+  reproducibility: {
+    simulation_id: string;
+    run_ref: string;
+    seed: number;
+    config: Record<string, unknown>;
+    engine_version: string;
+    data_version: string;
+    ai_mode: string;
+    ai_model: string | null;
+    policy_snapshot: Record<string, unknown>;
+    deterministic: boolean;
+  };
+  totals: Totals;
+  scenarios: ScenarioRow[];
+  funnel: Funnel;
+  ai_performance: AIPerformance;
+  baselines: BaselineStrategy[];
+  uplift: Uplift;
+};
+
 export type AIPerformance = {
   decisions: number;
   action_accuracy: number | null;

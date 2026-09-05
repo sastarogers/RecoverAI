@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { RazorpayStatus } from "@/lib/types";
 import { SCENARIO_SHORT, dateTime, relativeTime } from "@/lib/format";
 import { Button, Card, EmptyState, ErrorState, ScenarioChip, Skeleton, StatusBadge } from "@/components/ui";
+import { MessagingPanel } from "@/components/messaging-panel";
 
 export default function RazorpayPage() {
   const query = useQuery({
@@ -112,6 +113,8 @@ export default function RazorpayPage() {
           </p>
         </Card>
       )}
+
+      <MessagingPanel />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card

@@ -31,6 +31,10 @@ class DeliveryResult:
     provider: str = "simulated"
     provider_message_id: str | None = None
     error: str | None = None
+    #: True when the channel could not carry our text and delivered an approved
+    #: template instead. The composed body is still what RecoverAI decided to say;
+    #: this records that the recipient saw something else.
+    body_substituted: bool = False
     details: dict = field(default_factory=dict)
 
 

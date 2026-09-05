@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +13,7 @@ from app.api.deps import db_session
 from app.api.envelope import ok, paginated
 from app.core.config import settings
 from app.db.models import Customer, NotificationMessage, RecoveryOpportunity
-from app.domain.enums import MessageStatus
+from app.domain.enums import MessageChannel, MessageStatus
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -53,6 +54,93 @@ async def messaging_status(session: AsyncSession = Depends(db_session)) -> dict:
                 "Messages are composed and recorded even when no provider is configured. "
                 "A delivered message is a recovery action, never recovered revenue."
             ),
+        }
+    )
+
+
+def _explain_result(result) -> str:
+    """Say plainly what happened, including when the answer is 'nothing was sent'."""
+    if result.delivered_externally:
+        return "Delivered to the handset via Twilio."
+    if result.status is MessageStatus.FAILED:
+        return result.details.get("guidance") or (
+            result.error or "The provider rejected the message."
+        )
+    return (
+        "Composed but not delivered — set MESSAGING_ENABLED and Twilio credentials "
+        "to send for real."
+    )
+
+
+class TestMessageRequest(BaseModel):
+    """A real send, to a number you control, so delivery can be proven on stage."""
+
+    to: str = Field(min_length=6, max_length=20, description="E.164, e.g. +919812345678")
+    channel: MessageChannel = MessageChannel.WHATSAPP
+    customer_name: str | None = "Rahul"
+    amount_minor: int = Field(default=99_900, ge=100, le=100_000_000)
+
+
+@router.post("/test")
+async def send_test_message(body: TestMessageRequest) -> dict:
+    """Compose the real expired-card message and attempt to deliver it.
+
+    This is the demonstration path: it renders exactly the template a live recovery
+    would send, and — when Twilio is configured — actually delivers it. With no
+    provider configured it returns the composed text and says plainly that nothing
+    was sent, rather than implying a delivery that did not happen.
+    """
+    from app.domain.enums import FailureCategory, Scenario
+    from app.notifications.base import OutboundMessage, mask_recipient
+    from app.notifications.simulated import SimulatedChannel
+    from app.notifications.templates import render_payment_method_update
+
+    rendered = render_payment_method_update(
+        channel=body.channel,
+        merchant="RecoverAI Merchant",
+        customer_name=body.customer_name,
+        scenario=Scenario.FAILED_SUBSCRIPTION,
+        category=FailureCategory.EXPIRED_CARD,
+        amount_minor=body.amount_minor,
+        action_url=None,
+        plan_name="Pro Monthly",
+    )
+
+    channel_impl = SimulatedChannel()
+    if settings.messaging_live:
+        from app.notifications.twilio import TwilioChannel
+
+        try:
+            channel_impl = TwilioChannel()
+        except RuntimeError:
+            channel_impl = SimulatedChannel()
+
+    try:
+        result = await channel_impl.send(
+            OutboundMessage(
+                channel=body.channel,
+                to=body.to,
+                body=rendered.body,
+                template=rendered.template,
+            )
+        )
+    finally:
+        await channel_impl.aclose()
+
+    return ok(
+        {
+            "channel": str(body.channel),
+            "to": mask_recipient(body.to),
+            "body": rendered.body,
+            "status": str(result.status),
+            "provider": result.provider,
+            "delivered_externally": result.delivered_externally,
+            "provider_message_id": result.provider_message_id,
+            "error": result.error,
+            "explanation": _explain_result(result),
+            "guidance": result.details.get("guidance"),
+            "body_substituted": result.body_substituted,
+            "delivered_body": result.details.get("delivered_body"),
         }
     )
 

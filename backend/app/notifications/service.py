@@ -185,6 +185,11 @@ async def notify_payment_method_expired(
         delivered_externally=result.delivered_externally,
         provider_message_id=result.provider_message_id,
         error=result.error,
+        reason=(
+            "delivered as an approved template; WhatsApp would not carry this wording"
+            if result.body_substituted
+            else None
+        ),
         sent_at=utcnow(),
         details=result.details,
     )

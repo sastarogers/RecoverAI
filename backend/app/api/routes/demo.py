@@ -67,6 +67,9 @@ async def _demo_customer(session: AsyncSession, name: str | None, segment: str) 
         source=Source.SIMULATOR,
         name=name or "Rahul Sharma",
         email="demo@example.com",
+        # A contactable number, so the expired-card scenario can actually demonstrate
+        # the WhatsApp/SMS path instead of skipping for want of a recipient.
+        phone="+919812345678",
         segment=segment,
         account_age_days=412,
         previous_transaction_count=37,

@@ -38,11 +38,20 @@ class Settings(BaseSettings):
 
     # --- messaging (WhatsApp / SMS) ---
     twilio_account_sid: str | None = None
+    #: Account Auth Token. Simple, but it is the master credential for the whole account.
     twilio_auth_token: str | None = None
+    #: Preferred: a scoped API Key (SK...) that can be revoked without rotating the
+    #: account's master token. When set, it is used for authentication instead.
+    twilio_api_key_sid: str | None = None
+    twilio_api_key_secret: str | None = None
     #: Twilio WhatsApp sender, e.g. "whatsapp:+14155238886" (the sandbox number).
     twilio_whatsapp_from: str | None = None
     #: Twilio SMS sender, e.g. "+15005550006".
     twilio_sms_from: str | None = None
+    #: Approved WhatsApp content template (HX...). WhatsApp refuses freeform business
+    #: messages on sandbox/trial tiers, so this is the fallback that still delivers.
+    #: Its wording is fixed by the template, which the UI states rather than hides.
+    twilio_content_sid: str | None = None
     #: Master switch. Off by default so no message can leave the machine by accident.
     messaging_enabled: bool = False
     #: Preferred channel; falls back to the other when the preferred one is unavailable.
@@ -85,8 +94,26 @@ class Settings(BaseSettings):
         return bool(self.gemini_api_key or self.anthropic_api_key)
 
     @property
+    def twilio_api_key_configured(self) -> bool:
+        return bool(self.twilio_api_key_sid and self.twilio_api_key_secret)
+
+    @property
     def twilio_configured(self) -> bool:
-        return bool(self.twilio_account_sid and self.twilio_auth_token)
+        """An account SID plus *either* credential form."""
+        return bool(
+            self.twilio_account_sid and (self.twilio_auth_token or self.twilio_api_key_configured)
+        )
+
+    @property
+    def twilio_auth(self) -> tuple[str, str]:
+        """Basic-auth pair for the REST API.
+
+        With an API key the username is the key SID, not the account SID — the account
+        SID still identifies the resource in the URL path.
+        """
+        if self.twilio_api_key_configured:
+            return (self.twilio_api_key_sid or "", self.twilio_api_key_secret or "")
+        return (self.twilio_account_sid or "", self.twilio_auth_token or "")
 
     @property
     def whatsapp_configured(self) -> bool:

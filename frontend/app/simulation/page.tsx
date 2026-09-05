@@ -325,7 +325,7 @@ export default function SimulationPage() {
 
               {streamStatus === "COMPLETED" && (
                 <div className="flex gap-2 border-t border-line pt-2">
-                  <Link href={`/analytics?run=${activeRunId}`} className="flex-1">
+                  <Link href={`/simulation/${activeRunId}`} className="flex-1">
                     <Button className="w-full">View results →</Button>
                   </Link>
                 </div>
@@ -370,7 +370,7 @@ export default function SimulationPage() {
                       </td>
                       <td className="px-3 py-2 text-2xs text-ink-muted">{dateTime(run.started_at)}</td>
                       <td className="px-3 py-2">
-                        <Link href={`/analytics?run=${run.id}`} className="text-xs text-[var(--series-1)] hover:underline">
+                        <Link href={`/simulation/${run.id}`} className="text-xs text-[var(--series-1)] hover:underline">
                           Report →
                         </Link>
                       </td>
