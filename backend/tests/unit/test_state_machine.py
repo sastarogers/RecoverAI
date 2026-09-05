@@ -65,3 +65,45 @@ def test_transition_raises_on_illegal_move():
     with pytest.raises(IllegalStateTransition) as exc:
         transition(opp, S.RECOVERED)
     assert "OPP0001" in str(exc.value.details["opportunity_ref"])
+
+
+# --- ref allocation ---------------------------------------------------------
+#
+# A failed INSERT inside a Postgres transaction aborts the whole transaction, so a
+# racing ref allocation must roll back to a SAVEPOINT rather than merely catching
+# IntegrityError. Getting this wrong took down a production simulation run with
+# "current transaction is aborted, commands ignored until end of transaction block".
+
+
+async def test_ref_allocation_is_sequential(session):
+    from app.services.refs import next_ref
+
+    refs = [await next_ref(session, "TST") for _ in range(3)]
+    assert refs == ["TST0001", "TST0002", "TST0003"]
+
+
+async def test_ref_allocation_survives_a_lost_creation_race(session):
+    """Simulate another writer creating the counter first."""
+    from sqlalchemy import insert
+
+    from app.db.models import RefCounter
+    from app.services.refs import next_number
+
+    # Another writer got there first.
+    await session.execute(insert(RefCounter).values(name="RACE", value=7))
+    await session.flush()
+
+    # Our allocation must still succeed, and continue from where they left off.
+    assert await next_number(session, "RACE") == 8
+
+    # The session must remain usable afterwards — the failure mode being guarded
+    # against is a poisoned transaction, not just a wrong number.
+    assert await next_number(session, "RACE") == 9
+
+
+async def test_block_allocation_reserves_a_contiguous_range(session):
+    from app.services.refs import next_number
+
+    start = await next_number(session, "BLK", count=50)
+    assert start == 1
+    assert await next_number(session, "BLK") == 51

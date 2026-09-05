@@ -24,11 +24,17 @@ async def next_number(session: AsyncSession, name: str, *, count: int = 1) -> in
     )
     result = (await session.execute(stmt)).scalar_one_or_none()
     if result is None:
+        # First use of this prefix. The INSERT races other writers, so it must run in
+        # a SAVEPOINT: on Postgres a failed statement aborts the whole transaction, and
+        # every later command — including the retry below — then fails with
+        # InFailedSQLTransactionError. Catching IntegrityError alone is not enough.
         try:
-            await session.execute(insert(RefCounter).values(name=name, value=count))
+            async with session.begin_nested():
+                await session.execute(insert(RefCounter).values(name=name, value=count))
             result = count
         except IntegrityError:
-            # Another writer created it first; retry the update.
+            # Another writer created it first; the savepoint rolled back, so the
+            # transaction is still usable and the update now finds the row.
             result = (await session.execute(stmt)).scalar_one()
     return int(result) - count + 1
 
