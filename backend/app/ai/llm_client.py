@@ -136,31 +136,44 @@ class RecoveryLLMClient:
             },
         }
 
+        used_model = self.model
         try:
             assert self._http_client is not None
             async with self._semaphore:
                 resp = await self._http_client.post(url, json=body)
+                if resp.status_code in (503, 429) and self.model != "gemini-3.5-flash-lite":
+                    log.warning(
+                        "ai.gemini_congested_trying_flash_lite",
+                        primary_model=self.model,
+                        status=resp.status_code,
+                    )
+                    fallback_url = (
+                        f"https://generativelanguage.googleapis.com/v1beta/models/"
+                        f"gemini-3.5-flash-lite:generateContent?key={self.api_key}"
+                    )
+                    resp = await self._http_client.post(fallback_url, json=body)
+                    used_model = "gemini-3.5-flash-lite"
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
             log.warning("ai.gemini_call_failed", error=type(exc).__name__, latency_ms=elapsed)
-            return LLMResponse(None, elapsed, self.model, error=f"{type(exc).__name__}: {exc}")
+            return LLMResponse(None, elapsed, used_model, error=f"{type(exc).__name__}: {exc}")
 
         elapsed = int((time.perf_counter() - started) * 1000)
         candidates = data.get("candidates", [])
         if not candidates:
-            return LLMResponse(None, elapsed, self.model, error="No candidates returned by Gemini")
+            return LLMResponse(None, elapsed, used_model, error="No candidates returned by Gemini")
 
         parts = candidates[0].get("content", {}).get("parts", [])
         text = "".join(p.get("text", "") for p in parts if "text" in p)
         if not text.strip():
-            return LLMResponse(None, elapsed, self.model, error="empty response from Gemini")
+            return LLMResponse(None, elapsed, used_model, error="empty response from Gemini")
 
         try:
-            return LLMResponse(json.loads(text), elapsed, self.model)
+            return LLMResponse(json.loads(text), elapsed, used_model)
         except json.JSONDecodeError:
-            return LLMResponse(text, elapsed, self.model)
+            return LLMResponse(text, elapsed, used_model)
 
     async def _decide_anthropic(self, context: RecoveryContext) -> LLMResponse:
         started = time.perf_counter()
