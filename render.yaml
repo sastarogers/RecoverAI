@@ -28,6 +28,26 @@ services:
         sync: false
       - key: RAZORPAY_ENABLED
         value: "true"
+      # --- Customer messaging (WhatsApp / SMS via Twilio) ---
+      # Values are set in the Render dashboard, never in the repo: `sync: false`
+      # declares the variable without carrying a secret through git.
+      - key: MESSAGING_ENABLED
+        value: "true"
+      - key: MESSAGING_PREFERRED_CHANNEL
+        value: whatsapp
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: TWILIO_SMS_FROM
+        sync: false
+      # Approved WhatsApp template. WhatsApp refuses freeform business messages on
+      # sandbox/trial tiers; with this set the message still delivers, and the UI
+      # records that the wording was template-constrained.
+      - key: TWILIO_CONTENT_SID
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: recoverai-db
