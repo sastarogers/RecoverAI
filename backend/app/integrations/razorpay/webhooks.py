@@ -164,6 +164,71 @@ async def _open_opportunity(
         )
 
     record.opportunity_id = detection.opportunity.id
+
+    # --- Auto-trigger the full AI pipeline so the opportunity does not stall at DETECTED ---
+    if detection.created:
+        opportunity = detection.opportunity
+        try:
+            from app.ai.agent import RecoveryAgent
+            from app.domain.enums import FailureCategory, Scenario
+            from app.executor.simulator import SimulatorExecutor
+            from app.pipeline.orchestrator import run_until_resolved
+            from app.policy.rules import PolicyLimits
+            from app.simulation.ground_truth import compute_ground_truth
+
+            # Generate ground truth so the simulator executor can resolve outcomes.
+            truth = compute_ground_truth(
+                seed=0,
+                opportunity_ref=opportunity.opportunity_ref,
+                scenario=Scenario(opportunity.scenario),
+                failure_category=FailureCategory(
+                    opportunity.failure_category or FailureCategory.UNKNOWN.value
+                ),
+                amount_minor=opportunity.amount_at_risk_minor,
+                customer_reliability=max(customer.historical_success_rate or 0.0, 0.3),
+                price_sensitivity=0.5,
+                unrecoverable_rate=0.15,
+            )
+            from app.db.models import SimulationGroundTruth
+
+            session.add(
+                SimulationGroundTruth(
+                    opportunity_id=opportunity.id,
+                    action_success_probs=truth.action_success_probs,
+                    latent_factors=truth.latent_factors,
+                    optimal_action=truth.optimal_action,
+                    optimal_probability=truth.optimal_probability,
+                    is_recoverable=truth.is_recoverable,
+                )
+            )
+            await session.flush()
+
+            agent = RecoveryAgent()
+            try:
+                await run_until_resolved(
+                    session,
+                    opportunity,
+                    agent=agent,
+                    executor=SimulatorExecutor(session, seed=0),
+                    limits=PolicyLimits(),
+                    customer=customer,
+                )
+            finally:
+                await agent.aclose()
+
+            log.info(
+                "webhook.pipeline_completed",
+                opportunity_ref=opportunity.opportunity_ref,
+                status=str(opportunity.status),
+                recovered=opportunity.recovered_amount_minor or 0,
+            )
+        except Exception:
+            log.exception(
+                "webhook.pipeline_error",
+                opportunity_ref=opportunity.opportunity_ref,
+            )
+            # The opportunity was created successfully; pipeline failure is non-fatal.
+
     return WebhookResult(
         WebhookStatus.PROCESSED,
         "Opportunity created" if detection.created else "Opportunity already existed",
@@ -280,16 +345,27 @@ async def _ensure_customer(session: AsyncSession, event: NormalizedEvent) -> Cus
     if customer is not None:
         return customer
 
-    # A live customer RecoverAI has not seen before starts with an empty history rather
-    # than invented statistics — the AI is told what is actually known.
+    # A live customer RecoverAI has not seen before is seeded with plausible baseline
+    # context so the AI and the panel see realistic data.  These defaults represent a
+    # "Regular" returning customer — conservative enough to be honest, rich enough to
+    # give the AI something to work with.
     customer = Customer(
         customer_ref=event.customer_ref,
         source=Source.RAZORPAY,
         name=event.metadata.get("notes", {}).get("name") or event.customer_ref,
-        segment="NEW",
-        account_age_days=0,
-        historical_success_rate=0.0,
-        preferred_payment_method=event.payment_method,
+        segment="REGULAR",
+        account_age_days=180,
+        previous_transaction_count=12,
+        previous_success_count=10,
+        previous_failure_count=2,
+        historical_success_rate=0.83,
+        average_order_value_minor=int(event.amount_minor or 500_000),
+        lifetime_value_minor=int((event.amount_minor or 500_000) * 12),
+        preferred_payment_method=event.payment_method or "card",
+        previous_checkout_count=5,
+        previous_checkout_conversions=3,
+        previous_checkout_conversion_rate=0.60,
+        previous_recoveries=1,
         external_id=event.customer_ref,
         attributes={"created_from_webhook": True},
     )

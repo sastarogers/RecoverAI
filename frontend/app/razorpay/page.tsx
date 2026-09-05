@@ -1,17 +1,25 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { RazorpayStatus } from "@/lib/types";
 import { SCENARIO_SHORT, dateTime, relativeTime } from "@/lib/format";
-import { Card, EmptyState, ErrorState, ScenarioChip, Skeleton, StatusBadge } from "@/components/ui";
+import { Button, Card, EmptyState, ErrorState, ScenarioChip, Skeleton, StatusBadge } from "@/components/ui";
 
 export default function RazorpayPage() {
   const query = useQuery({
     queryKey: ["razorpay-status"],
     queryFn: () => api.get<RazorpayStatus>("/api/razorpay/status"),
     refetchInterval: 5000,
+  });
+
+  const paymentMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ payment_link_id: string; short_url: string; amount: string; status: string; mode: string }>(
+        "/api/razorpay/test-payment",
+        { amount_minor: 500000, description: "RecoverAI Test Mode payment", customer_ref: "CUST-DEMO" }
+      ),
   });
 
   if (query.isError) return <ErrorState message={(query.error as Error).message} />;
@@ -21,12 +29,34 @@ export default function RazorpayPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight text-ink">Razorpay Test Mode</h1>
-        <p className="mt-0.5 text-xs text-ink-2">
-          Live gateway events enter the same pipeline as simulated ones.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight text-ink">Razorpay Test Mode</h1>
+          <p className="mt-0.5 text-xs text-ink-2">
+            Live gateway events enter the same pipeline as simulated ones.
+          </p>
+        </div>
+        <Button 
+          onClick={() => paymentMutation.mutate()} 
+          disabled={paymentMutation.isPending || !integration.configured}
+        >
+          {paymentMutation.isPending ? "Creating..." : "Create Test Payment"}
+        </Button>
       </div>
+
+      {paymentMutation.isSuccess && paymentMutation.data && (
+        <div className="rounded-md border border-[var(--series-1)]/40 bg-[var(--series-1)]/10 px-4 py-3">
+          <p className="text-sm font-medium text-[var(--series-1)]">Test Payment Link Created!</p>
+          <p className="mt-1 text-xs text-ink-2">
+            Click here to open it:{" "}
+            <a href={paymentMutation.data.short_url} target="_blank" rel="noreferrer" className="font-mono text-[var(--series-1)] hover:underline">
+              {paymentMutation.data.short_url}
+            </a>
+          </p>
+          <p className="mt-1 text-2xs text-ink-muted">To simulate a failure, use Razorpay test card: <strong className="font-mono">4111 1111 1111 1112</strong></p>
+        </div>
+      )}
+
 
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <ConnectionTile

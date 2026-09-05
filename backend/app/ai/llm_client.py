@@ -1,4 +1,4 @@
-"""Anthropic client wrapper: structured output, timeouts, bounded concurrency.
+"""LLM client wrapper: Google Gemini & Anthropic Claude support.
 
 Kept deliberately thin. It returns raw payloads and never decides anything — parsing
 and validation happen in `app.ai.validation`, so a malformed or hostile response is
@@ -11,6 +11,8 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+
+import httpx
 
 from app.ai.prompts import SYSTEM_PROMPT, build_user_message
 from app.ai.schema import decision_json_schema
@@ -38,7 +40,7 @@ class LLMUnavailable(RuntimeError):
 
 
 class RecoveryLLMClient:
-    """Async Anthropic client for recovery decisions."""
+    """Async client for recovery decisions (Google Gemini or Anthropic Claude)."""
 
     def __init__(
         self,
@@ -47,33 +49,131 @@ class RecoveryLLMClient:
         model: str | None = None,
         timeout: float | None = None,
         max_concurrency: int | None = None,
+        provider: str | None = None,
     ) -> None:
-        key = api_key or settings.anthropic_api_key
-        if not key:
-            raise LLMUnavailable("ANTHROPIC_API_KEY is not configured")
-
-        from anthropic import AsyncAnthropic
-
         self.model = model or settings.ai_model
         self.timeout = timeout or settings.ai_timeout_seconds
-        self._client = AsyncAnthropic(api_key=key, timeout=self.timeout, max_retries=1)
-        # Bounded fan-out: a 2000-opportunity run must not open 2000 sockets.
         self._semaphore = asyncio.Semaphore(max_concurrency or settings.ai_max_concurrency)
+
+        # Detect provider
+        if provider:
+            self.provider = provider
+        elif (
+            (api_key and "AQ." in api_key)
+            or settings.gemini_api_key
+            or "gemini" in self.model.lower()
+        ):
+            self.provider = "gemini"
+        elif settings.anthropic_api_key:
+            self.provider = "anthropic"
+        else:
+            self.provider = "gemini"
+
+        if self.provider == "gemini":
+            self.api_key = api_key or settings.gemini_api_key
+            if not self.api_key:
+                raise LLMUnavailable("GEMINI_API_KEY is not configured")
+            self._http_client: httpx.AsyncClient | None = httpx.AsyncClient(timeout=self.timeout)
+            self._anthropic_client = None
+        else:
+            self.api_key = api_key or settings.anthropic_api_key
+            if not self.api_key:
+                raise LLMUnavailable("ANTHROPIC_API_KEY is not configured")
+            from anthropic import AsyncAnthropic
+
+            self._anthropic_client = AsyncAnthropic(
+                api_key=self.api_key, timeout=self.timeout, max_retries=1
+            )
+            self._http_client = None
 
     async def decide(self, context: RecoveryContext) -> LLMResponse:
         """Ask the model for one recovery decision. Never raises."""
+        if self.provider == "gemini":
+            return await self._decide_gemini(context)
+        return await self._decide_anthropic(context)
+
+    async def _decide_gemini(self, context: RecoveryContext) -> LLMResponse:
+        started = time.perf_counter()
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.model}:generateContent?key={self.api_key}"
+        )
+
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "enum": [str(a) for a in context.allowed_actions],
+                },
+                "recovery_probability": {
+                    "type": "NUMBER",
+                    "description": "Estimated chance this action recovers the revenue (0.0 to 1.0)",
+                },
+                "confidence": {
+                    "type": "NUMBER",
+                    "description": "Confidence in recommendation (0.0 to 1.0)",
+                },
+                "reason": {
+                    "type": "STRING",
+                    "description": "One or two sentences citing the specific signals that drove the choice",
+                },
+                "risk_level": {
+                    "type": "STRING",
+                    "enum": ["LOW", "MEDIUM", "HIGH"],
+                },
+            },
+            "required": ["action", "recovery_probability", "confidence", "reason", "risk_level"],
+        }
+
+        body = {
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": build_user_message(context)}]}],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+                "maxOutputTokens": settings.ai_max_output_tokens,
+            },
+        }
+
+        try:
+            assert self._http_client is not None
+            async with self._semaphore:
+                resp = await self._http_client.post(url, json=body)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            log.warning("ai.gemini_call_failed", error=type(exc).__name__, latency_ms=elapsed)
+            return LLMResponse(None, elapsed, self.model, error=f"{type(exc).__name__}: {exc}")
+
+        elapsed = int((time.perf_counter() - started) * 1000)
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return LLMResponse(None, elapsed, self.model, error="No candidates returned by Gemini")
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts if "text" in p)
+        if not text.strip():
+            return LLMResponse(None, elapsed, self.model, error="empty response from Gemini")
+
+        try:
+            return LLMResponse(json.loads(text), elapsed, self.model)
+        except json.JSONDecodeError:
+            return LLMResponse(text, elapsed, self.model)
+
+    async def _decide_anthropic(self, context: RecoveryContext) -> LLMResponse:
         started = time.perf_counter()
         try:
+            assert self._anthropic_client is not None
             async with self._semaphore:
-                response = await self._client.messages.create(
+                response = await self._anthropic_client.messages.create(
                     model=self.model,
                     max_tokens=settings.ai_max_output_tokens,
                     system=[
                         {
                             "type": "text",
                             "text": SYSTEM_PROMPT,
-                            # The system prompt is identical on every call in a run, so
-                            # caching it turns a large simulation from costly to cheap.
                             "cache_control": {"type": "ephemeral"},
                         }
                     ],
@@ -97,9 +197,10 @@ class RecoveryLLMClient:
         try:
             return LLMResponse(json.loads(text), elapsed, self.model)
         except json.JSONDecodeError:
-            # Hand the raw string to the validator, which reports it as a validation
-            # failure and triggers the deterministic fallback.
             return LLMResponse(text, elapsed, self.model)
 
     async def aclose(self) -> None:
-        await self._client.close()
+        if self._http_client is not None:
+            await self._http_client.aclose()
+        if self._anthropic_client is not None:
+            await self._anthropic_client.close()

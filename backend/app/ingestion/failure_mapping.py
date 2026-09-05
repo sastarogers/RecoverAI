@@ -59,11 +59,19 @@ FAILURE_CODE_MAP: dict[str, FC] = {
     "PAYMENT_METHOD_NOT_SUPPORTED": FC.PERMANENT,
     # --- checkout (no gateway failure exists) ---
     "CART_ABANDONED": FC.ABANDONED,
+    # --- Razorpay Test Mode / API-level codes ---
+    "BAD_REQUEST_ERROR": FC.BANK_DECLINE,
+    "SERVER_ERROR": FC.TEMPORARY,
+    "GATEWAY_ERROR": FC.NETWORK_ERROR,
+    "PAYMENT_ERROR": FC.BANK_DECLINE,
+    "REFUND_FAILED": FC.TEMPORARY,
+    "INTERNATIONAL_CARDS_NOT_SUPPORTED": FC.INVALID_PAYMENT_DETAILS,
+    "INTERNATIONAL_CARDS_NOT_ALLOWED": FC.INVALID_PAYMENT_DETAILS,
 }
 
 #: Razorpay `error_reason` / `error_code` fragments seen in Test Mode payloads.
 RAZORPAY_REASON_HINTS: dict[str, FC] = {
-    "payment_failed": FC.UNKNOWN,
+    "payment_failed": FC.BANK_DECLINE,
     "insufficient_funds": FC.INSUFFICIENT_FUNDS,
     "card_expired": FC.EXPIRED_CARD,
     "incorrect_cvv": FC.INVALID_PAYMENT_DETAILS,
@@ -84,15 +92,35 @@ def categorize(raw_code: str | None, *, reason: str | None = None) -> FailureCat
 
     Unmapped codes deliberately land on UNKNOWN rather than a guess — the policy
     engine treats UNKNOWN conservatively instead of blind-retrying it.
+
+    When the raw code is a generic Razorpay API-level code (like BAD_REQUEST_ERROR),
+    we prefer the more specific reason hint if one exists.
     """
-    if raw_code:
-        hit = FAILURE_CODE_MAP.get(raw_code.strip().upper())
+    # Generic Razorpay API-level codes that wrap a more specific reason.
+    _GENERIC_API_CODES = frozenset({
+        "BAD_REQUEST_ERROR", "SERVER_ERROR", "GATEWAY_ERROR", "PAYMENT_ERROR",
+    })
+
+    code_upper = raw_code.strip().upper() if raw_code else None
+
+    # If the raw code is a generic API wrapper, try the specific reason first.
+    if code_upper and code_upper in _GENERIC_API_CODES and reason:
+        hit = RAZORPAY_REASON_HINTS.get(reason.strip().lower())
         if hit is not None:
-            return FailureCategoryResult(hit, raw_code.strip().upper(), mapped=True)
+            return FailureCategoryResult(hit, (raw_code or reason).strip().upper(), mapped=True)
+
+    # Try the main code map.
+    if code_upper:
+        hit = FAILURE_CODE_MAP.get(code_upper)
+        if hit is not None:
+            return FailureCategoryResult(hit, code_upper, mapped=True)
+
+    # Fall back to the reason hints.
     if reason:
         hit = RAZORPAY_REASON_HINTS.get(reason.strip().lower())
-        if hit is not None and hit is not FC.UNKNOWN:
+        if hit is not None:
             return FailureCategoryResult(hit, (raw_code or reason).strip().upper(), mapped=True)
+
     return FailureCategoryResult(
         FC.UNKNOWN, (raw_code or reason or "UNKNOWN").strip().upper(), mapped=False
     )

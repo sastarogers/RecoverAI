@@ -28,8 +28,9 @@ class Settings(BaseSettings):
 
     # --- ai ---
     ai_mode: AIMode = "auto"
+    gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
-    ai_model: str = "claude-opus-5"
+    ai_model: str = "gemini-3.8-flash"
     ai_timeout_seconds: float = 20.0
     ai_max_concurrency: int = 8
     ai_llm_budget_per_run: int = 150
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_available(self) -> bool:
-        return bool(self.anthropic_api_key)
+        return bool(self.gemini_api_key or self.anthropic_api_key)
 
     @property
     def razorpay_configured(self) -> bool:

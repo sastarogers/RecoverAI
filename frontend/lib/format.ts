@@ -54,6 +54,7 @@ export function time(iso: string | null | undefined): string {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    timeZone: "Asia/Kolkata",
   });
 }
 
@@ -65,6 +66,7 @@ export function dateTime(iso: string | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "Asia/Kolkata",
   });
 }
 
