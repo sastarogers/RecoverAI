@@ -57,6 +57,7 @@ def _register_routes() -> None:
         dashboard,
         demo,
         health,
+        notifications,
         opportunities,
         razorpay,
         simulation,
@@ -73,6 +74,7 @@ def _register_routes() -> None:
         analytics,
         razorpay,
         demo,
+        notifications,
         settings_routes,
     ):
         app.include_router(module.router, prefix=settings.api_prefix)

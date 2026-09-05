@@ -72,6 +72,13 @@ class Customer(Base, TimestampMixin):
     previous_subscription_failures: Mapped[int] = mapped_column(Integer, default=0)
     previous_recoveries: Mapped[int] = mapped_column(Integer, default=0)
 
+    #: Customer has asked not to be contacted. Checked before every outbound message;
+    #: an opt-out is honoured even when the recovery action would otherwise message them.
+    # server_default so the column can be added to a populated table without a rewrite.
+    messaging_opt_out: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     external_id: Mapped[str | None] = mapped_column(String(64), index=True)
     attributes: Mapped[dict] = mapped_column(JSONType, default=dict)
 

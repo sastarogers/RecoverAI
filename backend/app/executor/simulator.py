@@ -18,6 +18,7 @@ from app.core.ids import utcnow
 from app.core.logging import get_logger
 from app.db.models import (
     CheckoutSession,
+    Customer,
     Payment,
     RecoveryAttempt,
     RecoveryOpportunity,
@@ -29,6 +30,7 @@ from app.domain.enums import (
     CheckoutStatus,
     EvidenceType,
     ExecutorKind,
+    FailureCategory,
     Outcome,
     PaymentStatus,
     RecoveryAction,
@@ -36,6 +38,7 @@ from app.domain.enums import (
     Source,
     SubscriptionEventType,
     SubscriptionStatus,
+    requires_payment_method_update,
 )
 from app.executor.base import ExecutionResult, RecoveryExecutor
 from app.services import refs
@@ -67,6 +70,25 @@ class SimulatorExecutor(RecoveryExecutor):
         attempt: RecoveryAttempt,
         action: RecoveryAction,
     ) -> ExecutionResult:
+        # Hard boundary: the simulator resolves *simulated* revenue only. Pointing it at
+        # a live gateway opportunity would let a dice roll mint recovered revenue that no
+        # payment ever produced, which is the one thing this platform must never do
+        # (§23, RULE 2). Refuse rather than trust the caller.
+        if str(opportunity.source) != str(Source.SIMULATOR):
+            log.error(
+                "simulator.refused_non_simulated_opportunity",
+                opportunity_ref=opportunity.opportunity_ref,
+                source=str(opportunity.source),
+            )
+            return ExecutionResult(
+                executed=False,
+                outcome=Outcome.PENDING,
+                error=(
+                    f"SimulatorExecutor refuses to resolve a {opportunity.source} "
+                    "opportunity; live recoveries must be confirmed by the gateway"
+                ),
+            )
+
         truth = self._ground_truth.get(opportunity.id)
         if truth is None:
             truth = (
@@ -83,6 +105,11 @@ class SimulatorExecutor(RecoveryExecutor):
                 outcome=Outcome.NO_RESPONSE,
                 error="no ground truth for this opportunity",
             )
+
+        # A dead instrument gets the same "update your payment method" message here as
+        # it would live, so simulations exercise the messaging path. The service pins a
+        # SIMULATOR-sourced opportunity to the simulated channel, so nothing is sent.
+        await self._notify_if_payment_method_dead(opportunity, attempt, action)
 
         draw = draw_outcome(
             seed=self.seed,
@@ -108,6 +135,52 @@ class SimulatorExecutor(RecoveryExecutor):
             evidence_ref=evidence_ref,
             details={"true_probability": draw.true_probability, "roll": draw.roll},
         )
+
+    async def _notify_if_payment_method_dead(
+        self,
+        opportunity: RecoveryOpportunity,
+        attempt: RecoveryAttempt,
+        action: RecoveryAction,
+    ) -> None:
+        category = FailureCategory(opportunity.failure_category or FailureCategory.UNKNOWN)
+        if not requires_payment_method_update(category, opportunity.failure_code):
+            return
+        if action not in (
+            RecoveryAction.PAYMENT_UPDATE_REQUEST,
+            RecoveryAction.ALTERNATE_PAYMENT_METHOD,
+            RecoveryAction.CUSTOMER_NOTIFICATION,
+        ):
+            return
+
+        from app.notifications.service import notify_payment_method_expired
+
+        customer = (
+            await self.session.execute(
+                select(Customer).where(Customer.id == opportunity.customer_id)
+            )
+        ).scalar_one_or_none()
+        if customer is None:
+            return
+
+        plan_name = None
+        if opportunity.subscription_id:
+            subscription = (
+                await self.session.execute(
+                    select(Subscription).where(Subscription.id == opportunity.subscription_id)
+                )
+            ).scalar_one_or_none()
+            plan_name = subscription.plan_name if subscription else None
+
+        try:
+            await notify_payment_method_expired(
+                self.session,
+                opportunity=opportunity,
+                customer=customer,
+                attempt=attempt,
+                plan_name=plan_name,
+            )
+        except Exception as exc:  # messaging must never break a simulation
+            log.warning("simulator.messaging_failed", error=type(exc).__name__)
 
     async def _materialize_success(
         self,

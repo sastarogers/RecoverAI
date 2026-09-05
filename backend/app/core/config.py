@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     ai_llm_budget_per_run: int = 150
     ai_max_output_tokens: int = 400
 
+    # --- messaging (WhatsApp / SMS) ---
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    #: Twilio WhatsApp sender, e.g. "whatsapp:+14155238886" (the sandbox number).
+    twilio_whatsapp_from: str | None = None
+    #: Twilio SMS sender, e.g. "+15005550006".
+    twilio_sms_from: str | None = None
+    #: Master switch. Off by default so no message can leave the machine by accident.
+    messaging_enabled: bool = False
+    #: Preferred channel; falls back to the other when the preferred one is unavailable.
+    messaging_preferred_channel: str = "whatsapp"
+
     # --- razorpay (TEST MODE ONLY) ---
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
@@ -71,6 +83,25 @@ class Settings(BaseSettings):
     @property
     def llm_available(self) -> bool:
         return bool(self.gemini_api_key or self.anthropic_api_key)
+
+    @property
+    def twilio_configured(self) -> bool:
+        return bool(self.twilio_account_sid and self.twilio_auth_token)
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(self.twilio_configured and self.twilio_whatsapp_from)
+
+    @property
+    def sms_configured(self) -> bool:
+        return bool(self.twilio_configured and self.twilio_sms_from)
+
+    @property
+    def messaging_live(self) -> bool:
+        """True only when messages can genuinely be delivered to a real handset."""
+        return bool(
+            self.messaging_enabled and (self.whatsapp_configured or self.sms_configured)
+        )
 
     @property
     def razorpay_configured(self) -> bool:

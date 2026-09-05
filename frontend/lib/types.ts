@@ -131,6 +131,25 @@ export type LedgerEntry = {
   settled_at: string;
 };
 
+export type NotificationMessage = {
+  id: string;
+  channel: string;
+  provider: string;
+  template: string;
+  recipient: string | null;
+  body: string;
+  action_url: string | null;
+  status: string;
+  delivered_externally: boolean;
+  provider_message_id: string | null;
+  error: string | null;
+  reason: string | null;
+  sent_at: string | null;
+  created_at: string | null;
+  opportunity_ref?: string | null;
+  customer_ref?: string | null;
+};
+
 export type TimelineEvent = {
   at: string;
   actor: string;
@@ -156,6 +175,7 @@ export type OpportunityDetail = OpportunityRow & {
   policy_decisions: PolicyDecision[];
   attempts: Attempt[];
   ledger: LedgerEntry[];
+  messages: NotificationMessage[];
   timeline: TimelineEvent[];
 };
 

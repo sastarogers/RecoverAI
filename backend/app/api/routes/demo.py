@@ -87,14 +87,24 @@ async def _demo_customer(session: AsyncSession, name: str | None, segment: str) 
     return customer
 
 
-async def _realistic_truth(session: AsyncSession, opportunity: RecoveryOpportunity) -> None:
-    """Authentic, mathematically generated ground truth for the demo."""
+async def _realistic_truth(
+    session: AsyncSession, opportunity: RecoveryOpportunity, *, demo_key: str
+) -> None:
+    """Authentic, mathematically generated ground truth — and repeatable.
+
+    The probabilities come from the same model the simulator uses, so the demo is not
+    rigged. But it is keyed on a fixed `demo_key` rather than on `opportunity_ref`:
+    demo refs increment on every click, so keying on them made each press of the button
+    a fresh dice roll and the scripted scenario a coin flip in front of an audience.
+    A stable key keeps the honesty and drops the roulette — the same scenario always
+    resolves the same way, and anyone can re-run it and get the same answer.
+    """
     from app.domain.enums import FailureCategory, Scenario
     from app.simulation.ground_truth import compute_ground_truth
 
     truth = compute_ground_truth(
         seed=DEMO_SEED,
-        opportunity_ref=opportunity.opportunity_ref,
+        opportunity_ref=demo_key,
         scenario=Scenario(opportunity.scenario),
         failure_category=FailureCategory(opportunity.failure_category or FailureCategory.UNKNOWN.value),
         amount_minor=opportunity.amount_at_risk_minor,
@@ -102,6 +112,9 @@ async def _realistic_truth(session: AsyncSession, opportunity: RecoveryOpportuni
         price_sensitivity=0.5,
         unrecoverable_rate=0.1,
     )
+    # The outcome engine keys its draw on `simulation_key` when present, so stamping it
+    # here makes execution deterministic too — not just the probabilities.
+    opportunity.simulation_key = demo_key
     session.add(
         SimulationGroundTruth(
             opportunity_id=opportunity.id,
@@ -161,6 +174,7 @@ async def demo_failed_payment(
     body: DemoRequest | None = None, session: AsyncSession = Depends(db_session)
 ) -> dict:
     """§43: ₹5,000 payment fails on a bank timeout, and RecoverAI recovers it."""
+    demo_key = "demo:failed-payment"
     body = body or DemoRequest()
     amount = body.amount_minor or 500_000
     customer = await _demo_customer(session, body.customer_name, CustomerSegment.HIGH_VALUE)
@@ -189,7 +203,7 @@ async def demo_failed_payment(
         occurred_at=utcnow(),
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _realistic_truth(session, opportunity)
+    await _realistic_truth(session, opportunity, demo_key=demo_key)
     return ok(await _drive(session, opportunity))
 
 
@@ -198,6 +212,7 @@ async def demo_checkout_abandonment(
     body: DemoRequest | None = None, session: AsyncSession = Depends(db_session)
 ) -> dict:
     """§43: a ₹7,000 cart is abandoned and recovered by payment link."""
+    demo_key = "demo:checkout-abandonment"
     body = body or DemoRequest()
     amount = body.amount_minor or 700_000
     customer = await _demo_customer(session, body.customer_name, CustomerSegment.REGULAR)
@@ -230,7 +245,7 @@ async def demo_checkout_abandonment(
         abandonment_reason="PAYMENT_FRICTION",
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _realistic_truth(session, opportunity)
+    await _realistic_truth(session, opportunity, demo_key=demo_key)
     return ok(await _drive(session, opportunity))
 
 
@@ -239,6 +254,7 @@ async def demo_subscription_failure(
     body: DemoRequest | None = None, session: AsyncSession = Depends(db_session)
 ) -> dict:
     """§43: a ₹999 renewal fails on an expired card and is recovered."""
+    demo_key = "demo:subscription-failure"
     body = body or DemoRequest()
     amount = body.amount_minor or 99_900
     customer = await _demo_customer(session, body.customer_name, CustomerSegment.HIGH_VALUE)
@@ -287,7 +303,7 @@ async def demo_subscription_failure(
         occurred_at=utcnow(),
     )
     opportunity = (await detect_opportunity(session, event)).opportunity
-    await _realistic_truth(session, opportunity)
+    await _realistic_truth(session, opportunity, demo_key=demo_key)
     return ok(await _drive(session, opportunity))
 
 

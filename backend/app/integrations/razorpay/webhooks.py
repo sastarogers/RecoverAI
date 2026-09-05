@@ -20,6 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.agent import RecoveryAgent
+from app.core.config import settings
 from app.core.ids import utcnow
 from app.core.logging import get_logger
 from app.db.models import (
@@ -35,6 +37,7 @@ from app.domain.enums import (
     EventType,
     EvidenceType,
     ExecutionStatus,
+    MessageStatus,
     OpportunityStatus,
     Outcome,
     PaymentStatus,
@@ -42,9 +45,13 @@ from app.domain.enums import (
     WebhookStatus,
 )
 from app.domain.events import SETTLING_EVENTS, NormalizedEvent
+from app.executor.razorpay import RazorpayExecutor
 from app.ingestion.detector import detect_opportunity
 from app.ingestion.normalizer_razorpay import normalize
 from app.ledger.settlement import settle_recovery
+from app.notifications.service import notify_payment_method_expired
+from app.pipeline.orchestrator import run_until_resolved
+from app.policy.rules import PolicyLimits
 from app.services import audit, refs
 
 log = get_logger("recoverai.webhooks")
@@ -165,69 +172,81 @@ async def _open_opportunity(
 
     record.opportunity_id = detection.opportunity.id
 
-    # --- Auto-trigger the full AI pipeline so the opportunity does not stall at DETECTED ---
+    # --- Run the real pipeline so a live failure does not stall at DETECTED ---
+    #
+    # This runs the *same* AI agent, policy engine and orchestrator the simulator uses,
+    # but with the Razorpay executor, which can only create a payable artifact and return
+    # PENDING. Nothing here can mark revenue recovered: that requires an inbound
+    # payment.captured / order.paid webhook carrying this opportunity's attribution
+    # (§23, RULE 2). The simulator is deliberately not reachable from this path.
     if detection.created:
         opportunity = detection.opportunity
-        try:
-            from app.ai.agent import RecoveryAgent
-            from app.domain.enums import FailureCategory, Scenario
-            from app.executor.simulator import SimulatorExecutor
-            from app.pipeline.orchestrator import run_until_resolved
-            from app.policy.rules import PolicyLimits
-            from app.simulation.ground_truth import compute_ground_truth
-
-            # Generate ground truth so the simulator executor can resolve outcomes.
-            truth = compute_ground_truth(
-                seed=0,
-                opportunity_ref=opportunity.opportunity_ref,
-                scenario=Scenario(opportunity.scenario),
-                failure_category=FailureCategory(
-                    opportunity.failure_category or FailureCategory.UNKNOWN.value
-                ),
-                amount_minor=opportunity.amount_at_risk_minor,
-                customer_reliability=max(customer.historical_success_rate or 0.0, 0.3),
-                price_sensitivity=0.5,
-                unrecoverable_rate=0.15,
+        if not settings.razorpay_configured:
+            # Without credentials there is no artifact to create, and inventing an
+            # outcome is exactly what must not happen. Leave it detected and say so.
+            await audit.record(
+                session,
+                entity_type="recovery_opportunity",
+                entity_id=opportunity.opportunity_ref,
+                actor=Actor.SYSTEM,
+                action="RECOVERY_DEFERRED",
+                detail={
+                    "reason": "Razorpay is not configured; no recovery artifact can be created",
+                    "status": str(opportunity.status),
+                },
             )
-            from app.db.models import SimulationGroundTruth
-
-            session.add(
-                SimulationGroundTruth(
-                    opportunity_id=opportunity.id,
-                    action_success_probs=truth.action_success_probs,
-                    latent_factors=truth.latent_factors,
-                    optimal_action=truth.optimal_action,
-                    optimal_probability=truth.optimal_probability,
-                    is_recoverable=truth.is_recoverable,
-                )
-            )
-            await session.flush()
-
-            agent = RecoveryAgent()
-            try:
-                await run_until_resolved(
-                    session,
-                    opportunity,
-                    agent=agent,
-                    executor=SimulatorExecutor(session, seed=0),
-                    limits=PolicyLimits(),
-                    customer=customer,
-                )
-            finally:
-                await agent.aclose()
-
             log.info(
-                "webhook.pipeline_completed",
+                "webhook.recovery_deferred",
                 opportunity_ref=opportunity.opportunity_ref,
-                status=str(opportunity.status),
-                recovered=opportunity.recovered_amount_minor or 0,
+                reason="razorpay_not_configured",
             )
-        except Exception:
-            log.exception(
-                "webhook.pipeline_error",
-                opportunity_ref=opportunity.opportunity_ref,
-            )
-            # The opportunity was created successfully; pipeline failure is non-fatal.
+
+            # Telling someone their card has expired does not depend on a payment
+            # gateway. When the instrument itself is dead, the message is worth sending
+            # on its own — it just carries no link to pay.
+            try:
+                dispatch = await notify_payment_method_expired(
+                    session, opportunity=opportunity, customer=customer
+                )
+                # This path sends outside the orchestrator, which is what normally keeps
+                # the counter. Increment here so notification-fatigue limits still see
+                # the contact, and the opportunity page does not report "0 messages sent"
+                # next to a message it is displaying.
+                if dispatch.status is not MessageStatus.SKIPPED:
+                    opportunity.notification_count += 1
+            except Exception:
+                log.exception(
+                    "webhook.messaging_failed",
+                    opportunity_ref=opportunity.opportunity_ref,
+                )
+        else:
+            try:
+                agent = RecoveryAgent()
+                try:
+                    await run_until_resolved(
+                        session,
+                        opportunity,
+                        agent=agent,
+                        executor=RazorpayExecutor(session),
+                        limits=PolicyLimits(),
+                        customer=customer,
+                    )
+                finally:
+                    await agent.aclose()
+
+                log.info(
+                    "webhook.pipeline_completed",
+                    opportunity_ref=opportunity.opportunity_ref,
+                    status=str(opportunity.status),
+                    # Always 0 here by construction; settlement happens on a later webhook.
+                    recovered=opportunity.recovered_amount_minor or 0,
+                )
+            except Exception:
+                log.exception(
+                    "webhook.pipeline_error",
+                    opportunity_ref=opportunity.opportunity_ref,
+                )
+                # The opportunity exists and is auditable; pipeline failure is non-fatal.
 
     return WebhookResult(
         WebhookStatus.PROCESSED,
@@ -345,27 +364,24 @@ async def _ensure_customer(session: AsyncSession, event: NormalizedEvent) -> Cus
     if customer is not None:
         return customer
 
-    # A live customer RecoverAI has not seen before is seeded with plausible baseline
-    # context so the AI and the panel see realistic data.  These defaults represent a
-    # "Regular" returning customer — conservative enough to be honest, rich enough to
-    # give the AI something to work with.
+    # A live customer RecoverAI has not seen before starts with an empty history rather
+    # than invented statistics. Seeding a stranger with a plausible-looking 83% success
+    # rate makes the AI reason over fiction and shows fabricated numbers on the
+    # opportunity page — the observable-context contract means the model is told what is
+    # actually known, including when that is nothing.
+    contact = (event.metadata or {}).get("contact") or {}
     customer = Customer(
         customer_ref=event.customer_ref,
         source=Source.RAZORPAY,
-        name=event.metadata.get("notes", {}).get("name") or event.customer_ref,
-        segment="REGULAR",
-        account_age_days=180,
-        previous_transaction_count=12,
-        previous_success_count=10,
-        previous_failure_count=2,
-        historical_success_rate=0.83,
-        average_order_value_minor=int(event.amount_minor or 500_000),
-        lifetime_value_minor=int((event.amount_minor or 500_000) * 12),
-        preferred_payment_method=event.payment_method or "card",
-        previous_checkout_count=5,
-        previous_checkout_conversions=3,
-        previous_checkout_conversion_rate=0.60,
-        previous_recoveries=1,
+        name=contact.get("name") or event.customer_ref,
+        email=contact.get("email"),
+        # Needed to reach the customer when their payment method is dead. Observed from
+        # the gateway payload, not invented.
+        phone=contact.get("phone"),
+        segment="NEW",
+        account_age_days=0,
+        historical_success_rate=0.0,
+        preferred_payment_method=event.payment_method,
         external_id=event.customer_ref,
         attributes={"created_from_webhook": True},
     )

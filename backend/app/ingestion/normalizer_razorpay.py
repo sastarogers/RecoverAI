@@ -97,6 +97,18 @@ def normalize(payload: dict, *, razorpay_event_id: str | None = None) -> Normali
         or event_name
     )
 
+    # Contact details for outbound recovery messaging. Razorpay puts these on the
+    # payment entity; without them a live opportunity has nobody to reach.
+    contact = {
+        k: v
+        for k, v in {
+            "phone": entity.get("contact") or notes.get("recoverai_customer_phone"),
+            "email": entity.get("email") or notes.get("recoverai_customer_email"),
+            "name": notes.get("name") or notes.get("recoverai_customer_name"),
+        }.items()
+        if v
+    }
+
     external_ids = {
         k: v
         for k, v in {
@@ -123,7 +135,7 @@ def normalize(payload: dict, *, razorpay_event_id: str | None = None) -> Normali
         failure_category=failure_category,
         external_ids=external_ids,
         attribution=attribution,
-        metadata={"razorpay_event": event_name, "notes": notes},
+        metadata={"razorpay_event": event_name, "notes": notes, "contact": contact},
         # Idempotency anchors on Razorpay's own event id when present, so redeliveries
         # of the same event collapse even if the entity appears in several events.
         dedupe_key=make_dedupe_key(Source.RAZORPAY, event_type, str(subject_ref)),

@@ -230,6 +230,48 @@ export default function OpportunityDetailPage() {
           </ol>
         </Card>
 
+        <Card
+          title="Customer messages"
+          subtitle="Sent when only the customer can fix the payment method"
+        >
+          {o.messages.length === 0 ? (
+            <p className="py-6 text-center text-xs text-ink-muted">
+              No message was sent for this opportunity.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {o.messages.map((m) => (
+                <li key={m.id} className="rounded-md border border-line p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded border border-line-strong px-1.5 py-0.5 text-2xs font-medium text-ink-2">
+                      {m.channel}
+                    </span>
+                    <StatusBadge status={m.status} />
+                    <span className="font-mono text-2xs text-ink-muted">{m.recipient ?? "—"}</span>
+                    {m.delivered_externally ? (
+                      <span className="text-2xs text-good">delivered via {m.provider}</span>
+                    ) : (
+                      <span className="text-2xs text-ink-muted">
+                        {m.status === "SIMULATED" ? "composed, not delivered" : m.reason ?? ""}
+                      </span>
+                    )}
+                  </div>
+                  {m.body && (
+                    <pre className="mt-2 whitespace-pre-wrap font-sans text-xs leading-relaxed text-ink-2">
+                      {m.body}
+                    </pre>
+                  )}
+                  {m.error && <p className="mt-1 text-2xs text-critical">{m.error}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-3 border-t border-line pt-2 text-2xs leading-snug text-ink-muted">
+            A delivered message is a recovery action, not recovered revenue — it only counts
+            once the customer actually pays.
+          </p>
+        </Card>
+
         <Card title="Recovery ledger" subtitle="The only record that counts as money">
           {o.ledger.length === 0 ? (
             <p className="py-6 text-center text-xs text-ink-muted">

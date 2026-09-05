@@ -63,6 +63,46 @@ DELAY_ONLY_CATEGORIES: frozenset[FailureCategory] = frozenset(
 )
 
 
+#: Raw codes inside CUSTOMER_ACTION_REQUIRED that mean the stored instrument itself is
+#: gone, as opposed to a one-off authentication slip the customer can simply retry.
+PAYMENT_METHOD_DEAD_CODES: frozenset[str] = frozenset(
+    {"MANDATE_REVOKED", "PAYMENT_METHOD_EXPIRED"}
+)
+
+
+def requires_payment_method_update(
+    category: FailureCategory, failure_code: str | None = None
+) -> bool:
+    """True when only the customer can fix this, by supplying a new instrument.
+
+    An expired card or an invalid VPA will never succeed on a retry — the card or the
+    handle has to change. That is a different situation from a declined charge or a
+    mistyped OTP, and it is the one case where reaching out on WhatsApp/SMS is the
+    genuinely useful action rather than noise.
+    """
+    if category in (FailureCategory.EXPIRED_CARD, FailureCategory.INVALID_PAYMENT_DETAILS):
+        return True
+    if category is FailureCategory.CUSTOMER_ACTION_REQUIRED and failure_code:
+        return failure_code.strip().upper() in PAYMENT_METHOD_DEAD_CODES
+    return False
+
+
+class MessageChannel(StrEnum):
+    WHATSAPP = "WHATSAPP"
+    SMS = "SMS"
+
+
+class MessageStatus(StrEnum):
+    #: Composed and recorded, but deliberately not delivered (simulation, or no provider).
+    SIMULATED = "SIMULATED"
+    QUEUED = "QUEUED"
+    SENT = "SENT"
+    DELIVERED = "DELIVERED"
+    FAILED = "FAILED"
+    #: Eligible action, but we declined to contact this customer (opt-out, no number).
+    SKIPPED = "SKIPPED"
+
+
 class PaymentMethod(StrEnum):
     UPI = "upi"
     CARD = "card"

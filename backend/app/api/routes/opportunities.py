@@ -13,11 +13,13 @@ from app.ai.agent import RecoveryAgent
 from app.api import serializers as ser
 from app.api.deps import db_session
 from app.api.envelope import ok, paginated
+from app.api.routes.notifications import serialize_message
 from app.core.errors import NotFoundError
 from app.db.models import (
     AIDecision,
     AuditLog,
     Customer,
+    NotificationMessage,
     PolicyDecision,
     RecoveryAttempt,
     RecoveryLedger,
@@ -146,6 +148,17 @@ async def get_opportunity(
         .scalars()
         .all()
     )
+    messages = (
+        (
+            await session.execute(
+                select(NotificationMessage)
+                .where(NotificationMessage.opportunity_id == opportunity.id)
+                .order_by(NotificationMessage.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
     audit = (
         (
             await session.execute(
@@ -178,6 +191,7 @@ async def get_opportunity(
             "policy_decisions": [ser.policy_decision(p) for p in policies],
             "attempts": [ser.attempt(a, a.outcome) for a in attempts],
             "ledger": [ser.ledger_entry(e) for e in ledger],
+            "messages": [serialize_message(m) for m in messages],
             "timeline": _timeline(opportunity, audit),
         }
     )

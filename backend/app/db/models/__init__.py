@@ -18,6 +18,7 @@ from app.db.models.governance import (
     SimulationRun,
     WebhookEvent,
 )
+from app.db.models.messaging import NotificationMessage
 from app.db.models.recovery import (
     AIDecision,
     PolicyDecision,
@@ -48,4 +49,5 @@ __all__ = [
     "BaselineResult",
     "WebhookEvent",
     "AuditLog",
+    "NotificationMessage",
 ]

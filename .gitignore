@@ -11,3 +11,7 @@ dist/
 build/
 *.log
 .DS_Store
+
+# build artifacts
+tsconfig.tsbuildinfo
+*.tsbuildinfo
