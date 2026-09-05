@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     policy_max_discount_minor: int = 1_000_000
     policy_opportunity_ttl_hours: int = 168
 
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://") and not v.startswith("postgresql+"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
     @field_validator("cors_origins")
     @classmethod
     def _strip(cls, v: str) -> str:
